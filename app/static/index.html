@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Оплаты — должники</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #111827; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --danger: #dc2626; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0f17; --card: #151b26; --text: #e5e7eb; --muted: #9ca3af;
+            --line: #263041; --accent: #60a5fa; --danger: #f87171; --ok: #4ade80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px 16px calc(32px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 22px; margin: 4px 0 16px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; gap: 12px; align-items: center; }
+  .row > * { flex: 1; min-width: 0; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input, select, button { font: inherit; width: 100%; min-height: 48px; border-radius: 10px; }
+  input, select { border: 1px solid var(--line); background: var(--bg); color: var(--text); padding: 0 12px; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field { margin-bottom: 12px; }
+  button { border: 0; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; }
+  .summary { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; color: var(--muted); font-size: 14px; }
+  .summary strong { color: var(--danger); font-size: 18px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .who { flex: 1; min-width: 0; }
+  .who b { display: block; overflow-wrap: anywhere; }
+  .who small { display: block; color: var(--muted); font-size: 13px; }
+  .who a { color: var(--accent); text-decoration: none; }
+  .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .debt { color: var(--danger); white-space: nowrap; }
+  li button { width: auto; min-height: 40px; padding: 0 14px; }
+  .empty { color: var(--ok); text-align: center; padding: 16px 0; }
+  .msg { margin-top: 10px; font-size: 14px; min-height: 20px; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--danger); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Учёт оплат</h1>
+
+  <section class="card" id="pay">
+    <h2>Внести оплату</h2>
+    <form id="pay-form" novalidate>
+      <div class="field">
+        <label for="student">Ученик</label>
+        <select id="student" required></select>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="amount">Сумма, сум</label>
+          <input id="amount" inputmode="numeric" autocomplete="off" placeholder="500 000" required>
+        </div>
+        <div class="field">
+          <label for="date">Дата</label>
+          <input id="date" type="date" required>
+        </div>
+      </div>
+      <button type="submit" id="pay-btn">Сохранить оплату</button>
+      <div class="msg" id="pay-msg" role="status"></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="row" style="margin-bottom:12px">
+      <h2 style="margin:0">Должники</h2>
+      <input id="month" type="month" aria-label="Месяц" style="max-width:170px">
+    </div>
+    <div class="summary"><span id="count"></span><strong id="total"></strong></div>
+    <ul id="debtors"></ul>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => new Intl.NumberFormat('ru-RU').format(n) + ' сум';
+// Tashkent is UTC+5 all year: "today" matches the server's.
+const tashkentToday = () => new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  const data = res.status === 204 ? null : await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = data && data.detail;
+    throw new Error(Array.isArray(detail) ? detail.map((d) => d.msg).join('; ') : detail || `Ошибка ${res.status}`);
+  }
+  return data;
+}
+
+async function loadStudents() {
+  const students = await api('/students');
+  $('student').innerHTML = '<option value="">Выберите ученика</option>' + students
+    .map((s) => `<option value="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(s.group)}</option>`).join('');
+}
+
+async function loadDebtors() {
+  const report = await api('/debtors?month=' + $('month').value);
+  const list = $('debtors');
+  $('count').textContent = report.debtors.length ? `${report.debtors.length} чел.` : '';
+  $('total').textContent = report.debtors.length ? fmt(report.total_debt) : '';
+  if (!report.debtors.length) {
+    list.innerHTML = '<li class="empty">Должников нет</li>';
+    return;
+  }
+  list.innerHTML = report.debtors.map((d) => `
+    <li>
+      <div class="who">
+        <b>${escapeHtml(d.name)}</b>
+        <small>${escapeHtml(d.group)} · <a href="tel:${escapeHtml(d.phone)}">${escapeHtml(d.phone)}</a></small>
+        <small>оплачено ${fmt(d.paid)} из ${fmt(d.monthly_fee)}</small>
+      </div>
+      <div class="side">
+        <b class="debt">${fmt(d.debt)}</b>
+        <button type="button" data-id="${d.student_id}" data-debt="${d.debt}">Оплата</button>
+      </div>
+    </li>`).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function say(text, kind) {
+  $('pay-msg').textContent = text;
+  $('pay-msg').className = 'msg ' + (kind || '');
+}
+
+// "Оплата" next to a debtor fills the form with that student and the debt.
+$('debtors').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-id]');
+  if (!btn) return;
+  $('student').value = btn.dataset.id;
+  $('amount').value = new Intl.NumberFormat('ru-RU').format(btn.dataset.debt);
+  say('');
+  $('pay').scrollIntoView({ behavior: 'smooth' });
+  $('amount').focus({ preventScroll: true });
+});
+
+// Group digits while typing: 1500000 -> 1 500 000.
+$('amount').addEventListener('input', (e) => {
+  const digits = e.target.value.replace(/\D/g, '').slice(0, 12);
+  e.target.value = digits ? new Intl.NumberFormat('ru-RU').format(digits) : '';
+});
+
+$('pay-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const studentId = Number($('student').value);
+  const amount = Number($('amount').value.replace(/\D/g, ''));
+  if (!studentId) return say('Выберите ученика', 'err');
+  if (!amount) return say('Введите сумму', 'err');
+  if (!$('date').value) return say('Укажите дату', 'err');
+  $('pay-btn').disabled = true;
+  try {
+    await api('/payments', { method: 'POST', body: JSON.stringify({ student_id: studentId, amount, date: $('date').value }) });
+    const name = $('student').selectedOptions[0].textContent.split(' · ')[0];
+    say(`Сохранено: ${name}, ${fmt(amount)}`, 'ok');
+    $('amount').value = '';
+    await loadDebtors();
+  } catch (err) {
+    say(err.message, 'err');
+  } finally {
+    $('pay-btn').disabled = false;
+  }
+});
+
+$('month').addEventListener('change', () => loadDebtors().catch((err) => say(err.message, 'err')));
+
+const today = tashkentToday();
+$('date').value = today;
+$('date').max = today;
+$('month').value = today.slice(0, 7);
+Promise.all([loadStudents(), loadDebtors()]).catch((err) => say(err.message, 'err'));
+</script>
+</body>
+</html>
