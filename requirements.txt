@@ -1,6 +1,2 @@
-fastapi==0.152.0
-uvicorn==0.54.0
-
-# tests
-pytest==9.1.1
-httpx2==2.15.1
+Django==6.1.2
+djangorestframework==3.18.3
